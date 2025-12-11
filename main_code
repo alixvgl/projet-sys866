@@ -1,0 +1,751 @@
+import numpy as np
+from typing import Dict, Tuple, List, Any
+import math
+import random
+from pulp import LpProblem, LpMinimize, LpVariable, lpSum, value, PULP_CBC_CMD
+import numpy as np
+from typing import Dict, Any
+import copy
+
+# =============================================================================
+# DÉFINITION DES PARAMÈTRES ET DE L'ÉTAT INITIAL
+# =============================================================================
+
+HORIZON_T = 24 # Horizon de temps de l'optimisation (= 24 semaines = 6 mois)
+M_SCENARIOS = 100 # Nombre de scénarios pour le SAA
+COSTS = {'a': 5, 'b': 1, 'c': 100} # Coûts de pondération de chaque flux pour la fonction objectif
+INITIAL_K = 8000 # Nombre de vaccin initial
+K_RENOUV_AMOUNT = 8000 # Quantité du renouvellement du stock de vaccins toutes les semaines
+RENOUVELLEMENT_PERIOD = 1 # Période de renouvellement en semaines
+
+# État Initial
+
+S_1_INITIAL = {
+    't': 0,
+    'Stock': {'K': INITIAL_K},
+
+    'Region_01': {'S': 1000000, 'E': 2000, 'I': 2000, 'R': 5000, 'D': 200, 'V': 0, 'P': 1009200}, # La Mégalopole
+    'Region_02': {'S':  500000, 'E': 1000, 'I': 1000, 'R': 2500, 'D': 100, 'V': 0, 'P':  504600},
+    'Region_03': {'S':  250000, 'E':  500, 'I':  500, 'R': 1250, 'D':  50, 'V': 0, 'P':  252300},
+    'Region_04': {'S':  100000, 'E':  200, 'I':  200, 'R':  500, 'D':  20, 'V': 0, 'P':  100920},
+    'Region_05': {'S':   50000, 'E':  100, 'I':  100, 'R':  250, 'D':  10, 'V': 0, 'P':   50460},
+    'Region_06': {'S':   25000, 'E':   50, 'I':   50, 'R':  125, 'D':   5, 'V': 0, 'P':   25230},
+    'Region_07': {'S':   10000, 'E':   20, 'I':   20, 'R':   50, 'D':   2, 'V': 0, 'P':   10092},
+    'Region_08': {'S':    5000, 'E':   10, 'I':   10, 'R':   25, 'D':   1, 'V': 0, 'P':    5046},
+    'Region_09': {'S':    2500, 'E':    5, 'I':    5, 'R':   12, 'D':   0, 'V': 0, 'P':    2522},
+    'Region_10': {'S':    1000, 'E':    2, 'I':    2, 'R':    5, 'D':   0, 'V': 0, 'P':    1009}, # Le Hameau
+
+    'P_mean': {f'Region_{i:02d}': {'beta': 0.14, 'nu': 0.012, 'alpha': 0.964, 'gamma': 0.213, 'eta': 0.161} for i in range(1, 11)}
+}
+
+S_2_INITIAL = {
+    't': 0,
+    'Stock': {'K': INITIAL_K},
+
+    # --- GROUPE A (Fort E, Faible I) ---
+    'Region_01': {'S': 100000, 'E': 5000, 'I': 100, 'R': 500, 'D': 10, 'V': 0, 'P': 105610},
+    'Region_02': {'S': 100000, 'E': 4500, 'I': 100, 'R': 500, 'D': 10, 'V': 0, 'P': 105110},
+    'Region_03': {'S': 100000, 'E': 4000, 'I': 100, 'R': 500, 'D': 10, 'V': 0, 'P': 104610},
+
+    # --- GROUPE B (Faible E, Fort I) ---
+    'Region_04': {'S': 90000, 'E': 500, 'I': 3000, 'R': 1000, 'D': 300, 'V': 0, 'P': 94800},
+    'Region_05': {'S': 90000, 'E': 500, 'I': 2500, 'R': 1000, 'D': 250, 'V': 0, 'P': 94250},
+    'Region_06': {'S': 90000, 'E': 500, 'I': 2000, 'R': 1000, 'D': 200, 'V': 0, 'P': 93700},
+
+    # --- GROUPE C (Beaucoup de R) ---
+    'Region_07': {'S': 50000, 'E': 100, 'I': 100, 'R': 40000, 'D': 2000, 'V': 0, 'P': 92200},
+    'Region_08': {'S': 60000, 'E': 100, 'I': 100, 'R': 30000, 'D': 1500, 'V': 0, 'P': 91700},
+
+    # --- GROUPE D (Presque rien) ---
+    'Region_09': {'S': 100000, 'E': 10, 'I': 10, 'R': 0, 'D': 0, 'V': 0, 'P': 100020},
+    'Region_10': {'S': 100000, 'E': 5, 'I': 5, 'R': 0, 'D': 0, 'V': 0, 'P': 100010},
+
+    # --- PARAMÈTRES IDENTIQUES ---
+    'P_mean': {f'Region_{i:02d}': {'beta': 0.14, 'nu': 0.012, 'alpha': 0.964, 'gamma': 0.213, 'eta': 0.161} for i in range(1, 11)}
+}
+
+S_3_INITIAL = {
+    't': 0,
+    'Stock': {'K': INITIAL_K},
+
+    'Region_01': {'S': 500000, 'E': 50, 'I': 10, 'R': 0, 'D': 0, 'V': 0, 'P': 500060},
+    'Region_02': {'S': 500000, 'E': 50, 'I': 10, 'R': 0, 'D': 0, 'V': 0, 'P': 500060},
+
+    'Region_03': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+    'Region_04': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+    'Region_05': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+    'Region_06': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+    'Region_07': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+    'Region_08': {'S': 50000, 'E': 200, 'I': 50, 'R': 100, 'D': 10, 'V': 0, 'P': 50360},
+
+    'Region_09': {'S': 4000, 'E': 500, 'I': 500, 'R': 0, 'D': 20, 'V': 0, 'P': 5020},
+    'Region_10': {'S': 4000, 'E': 500, 'I': 500, 'R': 0, 'D': 20, 'V': 0, 'P': 5020},
+
+    'P_mean': {f'Region_{i:02d}': {'beta': 0.14, 'nu': 0.012, 'alpha': 0.964, 'gamma': 0.213, 'eta': 0.161} for i in range(1, 11)}
+}
+
+def K_renouv_func(t):
+    if t % RENOUVELLEMENT_PERIOD == 0:
+        return K_RENOUV_AMOUNT
+    else:
+        return 0
+    
+# =============================================================================
+# GÉNÉRATION DE SCÉNARIOS POUR LE SAA
+# =============================================================================
+
+def ajuster_beta_dynamique(S_t):
+    """
+    Ajuste la moyenne de Beta en fonction de la charge infectieuse actuelle.
+    Simule une politique gouvernementale :
+    - Si beaucoup d'infectés -> Confinement (Beta baisse)
+    - Si peu d'infectés -> Relâchement (Beta remonte vers sa valeur naturelle)
+    """
+    S_ajuste = copy.deepcopy(S_t)
+    regions = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+    
+    SEUIL_ALERTE = 0.05  # Si 5% de la population est infectée (I)
+    BETA_NATUREL = 0.30  # Taux sans masque ni geste barrière
+    BETA_CONFINEMENT = 0.08 # Taux sous confinement strict
+    
+    for region in regions:
+        I = S_t[region]['I']
+        P = S_t[region]['P']
+        taux_infection = I / P if P > 0 else 0
+        
+        current_beta_mean = S_t['P_mean'][region]['beta']
+        
+
+        if taux_infection > SEUIL_ALERTE:
+            nouveau_beta = 0.8 * current_beta_mean + 0.2 * BETA_CONFINEMENT
+        else:
+
+            nouveau_beta = 0.9 * current_beta_mean + 0.1 * BETA_NATUREL
+
+        S_ajuste['P_mean'][region]['beta'] = nouveau_beta
+        
+    return S_ajuste
+
+def calculer_nu_dynamique(state_region):
+    """
+    Calcule le taux de vaccination volontaire (nu) en fonction des morts.
+    """
+    D = state_region['D']
+    P = state_region['P']
+    
+    if P == 0: return 0
+    
+    # Paramètres de comportement
+    NU_BASE = 0.012      # 1.2% des gens se font vacciner par semaine si tout va bien
+    NU_MAX = 0.50       # Capacité maximale du système ou limite d'acceptation (50%/semaine)
+    FACTEUR_PEUR = 20.0 # À quel point les morts motivent les gens
+    
+    ratio_morts = D / P
+   
+    nu_calcule = NU_BASE + (FACTEUR_PEUR * ratio_morts)
+    
+    return min(NU_MAX, nu_calcule)
+
+def generer_parametres_aleatoires(S_t, ecart_type_ratio=0.2):
+    """
+    Génère uniquement les paramètres épidémiologiques aléatoires (indépendamment de x).
+    Utilisé dans le SAA pour générer les scénarios.
+    """
+    S_dynamique = ajuster_beta_dynamique(S_t)
+
+    params_t = {}
+    regions = [k for k in S_t.keys() if k != 'Stock' and k != 't' and k != 'P_mean']
+
+    for region in regions:
+        
+        params_region = S_dynamique['P_mean'][region]
+        nu_moyen_dynamique = calculer_nu_dynamique(S_t[region])
+
+        # Tirage des paramètres aléatoires
+        beta_t_i = np.abs(np.random.normal(params_region['beta'], ecart_type_ratio * params_region['beta']))       
+        nu_t_i = np.abs(np.random.normal(nu_moyen_dynamique, ecart_type_ratio * nu_moyen_dynamique))
+
+        alpha_t_i = np.abs(np.random.normal(params_region['alpha'], ecart_type_ratio * params_region['alpha']))
+        gamma_t_i = np.abs(np.random.normal(params_region['gamma'], ecart_type_ratio * params_region['gamma']))
+        eta_t_i = np.abs(np.random.normal(params_region['eta'], ecart_type_ratio * params_region['eta']))
+
+        # S'assurer que les probabilités/taux sont dans [0, 1]
+        params_t[region] = {
+            'beta': np.clip(beta_t_i, 0, 1),
+            'nu': np.clip(nu_t_i, 0, 1),
+            'alpha': np.clip(alpha_t_i, 0, 1),
+            'gamma': np.clip(gamma_t_i, 0, 1),
+            'eta': np.clip(eta_t_i, 0, 1),
+        }
+
+    return params_t
+
+
+def generer_scenario_seirdv(S_t, x_t, ecart_type_ratio=0.2):
+    """
+    Simule la transition stochastique SEIRDV pour la période t -> t+1.
+
+    Génère un scénario d'informations exogènes (flux Delta) W_t+1,
+    et les paramètres épidémiologiques tirés au hasard pour cette région et cette période.
+
+    """
+    W_t_plus_1 = {}
+    params_t = generer_parametres_aleatoires(S_t, ecart_type_ratio)
+    regions = [k for k in S_t.keys() if k != 'Stock' and k != 't' and k != 'P_mean']
+
+    for region in regions:
+        region_data = S_t[region]
+
+        # Récupérer les états de population
+        S_pop = max(0, region_data['S'])
+        E_pop = max(0, region_data['E'])
+        I_pop = max(0, region_data['I'])
+        P_tot = region_data['P']
+
+        # Application de la décision x_t (vaccination de campagne uniquement)
+        x_t_i = max(0, min(x_t.get(region, 0), S_pop))
+
+        # PAS DE VACCINATION SPONTANÉE - uniquement la campagne
+        Delta_S_V = 0
+
+        # Population saine restante pour l'INFECTION (après vaccination de campagne)
+        S_risk_for_E = max(0, S_pop - x_t_i)
+
+        # Calcul de la probabilité de Contamination (S -> E)
+        if P_tot > 0 and I_pop > 0:
+            p_SE_t_i = params_t[region]['beta'] * I_pop / P_tot
+            p_SE_t_i = np.clip(p_SE_t_i, 0, 1)
+        else:
+            p_SE_t_i = 0
+
+        # Flux 1: Contamination (S -> E)
+        if S_risk_for_E > 0:
+            Delta_S_E = np.random.binomial(n=int(S_risk_for_E), p=p_SE_t_i)
+        else:
+            Delta_S_E = 0
+
+        # Flux 2: Infection (E -> I)
+        p_EI_t_i = params_t[region]['alpha']
+        if E_pop > 0:
+            Delta_E_I = np.random.binomial(n=int(E_pop), p=p_EI_t_i)
+        else:
+            Delta_E_I = 0
+
+        # Flux 3 & 4: Retrait (I -> R ou D)
+        p_Retrait_total = params_t[region]['gamma']
+
+        # Tirage du nombre total d'individus quittant I
+        if I_pop > 0:
+            Delta_I_Retrait = np.random.binomial(n=int(I_pop), p=p_Retrait_total)
+        else:
+            Delta_I_Retrait = 0
+
+        # Répartition du retrait total (Décès vs Guérison)
+        eta_t_i = params_t[region]['eta']
+
+        # Tirage pour la proportion de décès parmi ceux qui se retirent
+        if Delta_I_Retrait > 0:
+            Delta_I_D = np.random.binomial(n=Delta_I_Retrait, p=eta_t_i)
+            Delta_I_R = Delta_I_Retrait - Delta_I_D
+        else:
+            Delta_I_D = 0
+            Delta_I_R = 0
+
+        # Enregistrement des flux (W_t+1)
+        W_t_plus_1[region] = {
+            'Delta_S_E': Delta_S_E,
+            'Delta_E_I': Delta_E_I,
+            'Delta_I_R': Delta_I_R,
+            'Delta_I_D': Delta_I_D,
+            'Delta_S_V': Delta_S_V,
+            'x_t_planifie': x_t_i,
+        }
+
+    return W_t_plus_1, params_t
+
+# =============================================================================
+# POLITIQUE PFA
+# =============================================================================
+
+def solve_pfa_policy(S_t):
+    """
+    Politique PFA : Alloue les vaccins en priorisant les régions avec le taux d'infection le plus élevé.
+
+    Score de priorité : Pr_i = I_i / P_i (taux d'infection)
+    Allocation : On alloue K_t aux régions dans l'ordre décroissant de Pr_i jusqu'à épuisement du stock.
+    """
+    regions = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+    K_t = S_t['Stock']['K']
+
+    # Calcul du score de priorité pour chaque région
+    priorities = {}
+    for region in regions:
+        I_i = S_t[region]['I']
+        P_i = S_t[region]['P']
+        S_i = S_t[region]['S']
+
+        if P_i > 0:
+            priorities[region] = {
+                'score': I_i / P_i,  # Taux d'infection
+                'I': I_i,
+                'S': S_i
+            }
+        else:
+            priorities[region] = {'score': 0, 'I': 0, 'S': S_i}
+
+    # Tri des régions par ordre décroissant de priorité
+    sorted_regions = sorted(priorities.keys(), key=lambda r: priorities[r]['score'], reverse=True)
+
+    # Allocation des vaccins dans l'ordre de priorité
+    x_t_star = {r: 0.0 for r in regions}
+    stock_restant = K_t
+
+    for region in sorted_regions:
+        if stock_restant <= 0:
+            break
+
+        # On alloue au maximum le stock restant ou le nombre de sains disponibles
+        allocation = min(stock_restant, priorities[region]['S'])
+        x_t_star[region] = allocation
+        stock_restant -= allocation
+
+    return x_t_star
+
+
+# =============================================================================
+# RÉSOLUTION DU PROBLÈME SAA
+# =============================================================================
+
+def solve_saa_problem(S_t, N_scenarios, costs):
+    
+    regions = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+    K_t = S_t['Stock']['K']
+
+    # Définition du problème d'optimisation
+    model = LpProblem("SAA_Vaccine_Allocation", LpMinimize)
+
+    # Variables de décision: x_t^i (Quantité de vaccins à allouer à la région i)
+    x_vars = LpVariable.dicts("x", regions, lowBound=0, cat='Continuous')
+
+    total_cost = []
+
+    # Construction de la Fonction Objectif SAA
+    for m in range(N_scenarios):
+        # Générer UNIQUEMENT les paramètres aléatoires (indépendamment de x)
+        P_m = generer_parametres_aleatoires(S_t)
+
+        cost_immediat = 0
+        
+        for region in regions:
+            i = region
+            S_i = S_t[i]['S']
+            E_i = S_t[i]['E']
+            I_i = S_t[i]['I']
+            P_i = S_t[i]['P']
+
+            # Paramètres aléatoires pour ce scénario m
+            beta_i_m = P_m[i]['beta']
+            alpha_i_m = P_m[i]['alpha']
+            gamma_i_m = P_m[i]['gamma']
+            eta_i_m = P_m[i]['eta']
+
+            # CALCUL DES ESPÉRANCES CONDITIONNELLES sachant x_t et les paramètres P_m
+
+            # La population à risque pour la contamination = Sains après vaccination de campagne
+            E_S_risk_for_E = S_i - x_vars[i]
+
+            # Probabilité de contamination S->E
+            if P_i > 0 and I_i > 0:
+                p_SE_i_m = beta_i_m * I_i / P_i
+            else:
+                p_SE_i_m = 0
+
+            # Espérance du flux S->E
+            E_Delta_S_E = p_SE_i_m * E_S_risk_for_E
+
+            # Espérance du flux E->I
+            E_Delta_E_I = alpha_i_m * (E_i + E_Delta_S_E)
+
+            # Espérance du flux I -> (R + D)
+            E_Delta_I_Retrait = gamma_i_m * I_i
+
+            # Espérance du flux I->D (décès)
+            E_Delta_I_D = eta_i_m * E_Delta_I_Retrait
+
+            # Coût total pour ce scénario m et cette région i
+            cost_immediat += (costs['a'] * E_Delta_S_E + 
+                                 costs['b'] * E_Delta_E_I + 
+                                 costs['c'] * E_Delta_I_D)
+
+        total_cost.append(cost_immediat)
+
+    # La fonction objectif est la moyenne des coûts sur tous les scénarios
+    model += lpSum(total_cost) / N_scenarios, "Total_SAA_Cost"
+
+    # Contrainte 1: Ne pas dépasser le stock disponible
+    model += lpSum([x_vars[i] for i in regions]) <= K_t, "Stock_Constraint"
+    
+    # Contrainte 2 : Répartir "équitablement le stock" (= Ne pas allouer + de 40% du stock à une région)
+    EQUITY_RATIO = 0.4 
+    max_per_region = K_t * EQUITY_RATIO
+    for region in regions:
+        if K_t > 0:
+            model += x_vars[region] <= max_per_region, f"Equity_Constraint_{region}"
+
+    for region in regions:
+        S_actuel = S_t[region]['S']
+        
+        nu_actuel = calculer_nu_dynamique(S_t[region])
+        max_personnes_volontaires = S_actuel * nu_actuel
+        # Contrainte 3 : On ne peut pas vacciner plus que les volontaires
+        #model += x_vars[region] <= max_personnes_volontaires, f"Contrainte_Nu_Dynamique_{region}"
+        
+        # Contrainte 4 : On ne peut pas vacciner plus de gens qu'il n'y en a 
+        model += x_vars[region] <= S_actuel
+
+        
+    # Résolution du problème
+    model.solve(PULP_CBC_CMD(msg=0))
+
+    # Extraction du résultat
+    if model.status == 1:
+        x_t_star = {region: value(x_vars[region]) for region in regions}
+    else:
+        print(f"Echec de la résolution")
+        x_t_star = {r: 0.0 for r in regions}
+
+    return x_t_star
+
+# =============================================================================
+# FONCTION DE TRANSITION
+# =============================================================================
+def update_state(S_t, x_t_star, K_renouv_func):
+    """
+    Fonction de Transition d'état S_t -> S_t+1
+    Mise à jour dynamique de Nu (volonté) et Beta (politique sanitaire).
+    """
+    S_next = copy.deepcopy(S_t)
+
+    # Incertitude réalisée (flux réels)
+    W_real, P_real = generer_scenario_seirdv(S_t, x_t_star)
+
+    # Mise à jour du Temps
+    S_next['t'] = S_t['t'] + 1
+
+    # Mise à jour du Stock
+    quantite_allouee = sum(x_t_star.values())
+    stock_restant = max(0, S_t['Stock']['K'] - quantite_allouee)
+    
+    # Renouvellement périodique
+    if S_next['t'] % RENOUVELLEMENT_PERIOD == 0:
+        stock_restant += K_RENOUV_AMOUNT
+    S_next['Stock']['K'] = stock_restant
+
+    # Mise à jour par Région
+    regions = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+    
+    for region in regions:
+        # Mise à jour des Compartiments
+        Delta_S_E = W_real[region]['Delta_S_E']
+        Delta_E_I = W_real[region]['Delta_E_I']
+        Delta_I_R = W_real[region]['Delta_I_R']
+        Delta_I_D = W_real[region]['Delta_I_D']
+        x_t_i = x_t_star.get(region, 0)
+
+        S_prev = S_t[region]['S']
+        
+        # Calcul des nouveaux stocks
+        S_next[region]['S'] = max(0, S_prev - x_t_i - Delta_S_E)
+        S_next[region]['E'] = max(0, S_t[region]['E'] + Delta_S_E - Delta_E_I)
+        S_next[region]['I'] = max(0, S_t[region]['I'] + Delta_E_I - Delta_I_R - Delta_I_D)
+        S_next[region]['R'] = max(0, S_t[region]['R'] + Delta_I_R)
+        S_next[region]['D'] = max(0, S_t[region]['D'] + Delta_I_D)
+        S_next[region]['V'] = max(0, S_t[region]['V'] + x_t_i)
+        
+        # Recalcul de la population totale vivante
+        S_next[region]['P'] = (S_next[region]['S'] + S_next[region]['E'] + 
+                               S_next[region]['I'] + S_next[region]['R'] + 
+                               S_next[region]['V'])
+
+        # Mise à jour dynamique des paramètres
+
+        # Mise à jour de Nu
+        nouvelle_envie_nu = calculer_nu_dynamique(S_next[region])
+        S_next['P_mean'][region]['nu'] = nouvelle_envie_nu
+
+        # Mise à jour de Beta
+        I_actuel = S_next[region]['I']
+        P_actuel = S_next[region]['P']
+        taux_infection = I_actuel / P_actuel if P_actuel > 0 else 0
+        
+        # Récupération des seuils
+        SEUIL_ALERTE = 0.05       
+        BETA_NATUREL = 0.30       
+        BETA_CONFINEMENT = 0.08   
+        
+        current_beta_mean = S_t['P_mean'][region]['beta']
+        
+        if taux_infection > SEUIL_ALERTE:
+            nouveau_beta = 0.8 * current_beta_mean + 0.2 * BETA_CONFINEMENT
+        else:
+            nouveau_beta = 0.9 * current_beta_mean + 0.1 * BETA_NATUREL
+            
+        S_next['P_mean'][region]['beta'] = nouveau_beta
+
+    return S_next
+
+def update_state_old(S_t, x_t_star, K_renouv_func):
+    """
+    Fonction de Transition d'état S_t -> S_t+1 en utilisant la réalisation réelle de l'incertitude W_real.
+    """
+    S_next = copy.deepcopy(S_t)
+
+    # Obtenir la réalisation réelle de l'incertitude W_real
+    W_real, P_real = generer_scenario_seirdv(S_t, x_t_star)
+
+    # Mise à jour du temps et du stock de vaccins
+    S_next['t'] = S_t['t'] + 1
+
+    # Déduction de l'allocation du stock
+    S_next['Stock']['K'] = S_t['Stock']['K'] - np.sum(list(x_t_star.values()))
+
+    # Renouvellement basé sur le NOUVEAU temps (t+1)
+    # Si on est au début d'un nouveau cycle (t+1 % 4 == 0), on AJOUTE 5000 vaccins au stock
+    if S_next['t'] % RENOUVELLEMENT_PERIOD == 0:
+        S_next['Stock']['K'] += K_RENOUV_AMOUNT  # Ajout de nouveaux vaccins
+
+    # Mise à jour des compartiments pour chaque région
+    regions = [k for k in S_t.keys() if k != 'Stock' and k != 't' and k != 'P_mean']
+    for region in regions:
+        # Flux observés (pas de Delta_S_V car pas de vaccination spontanée)
+        Delta_S_E_real = W_real[region]['Delta_S_E']
+        Delta_E_I_real = W_real[region]['Delta_E_I']
+        Delta_I_R_real = W_real[region]['Delta_I_R']
+        Delta_I_D_real = W_real[region]['Delta_I_D']
+
+        # Allocation de la campagne
+        x_t_i = x_t_star.get(region, 0)
+
+        # Mettre à jour BETA : maintenir l'évolution du beta réel (tiré aléatoirement dans W_real)
+        S_next['P_mean'][region]['beta'] = P_real[region]['beta']
+
+        # Mise à jour des compartiments (avec garde-fous pour éviter les valeurs négatives)
+        # PAS de Delta_S_V car pas de vaccination spontanée
+        S_next[region]['S'] = max(0, S_t[region]['S'] - x_t_i - Delta_S_E_real)
+        S_next[region]['E'] = max(0, S_t[region]['E'] + Delta_S_E_real - Delta_E_I_real)
+        S_next[region]['I'] = max(0, S_t[region]['I'] + Delta_E_I_real - Delta_I_R_real - Delta_I_D_real)
+        S_next[region]['R'] = max(0, S_t[region]['R'] + Delta_I_R_real)
+        S_next[region]['D'] = max(0, S_t[region]['D'] + Delta_I_D_real)
+        S_next[region]['V'] = max(0, S_t[region]['V'] + x_t_i)  # Uniquement vaccination de campagne
+
+        nouvelle_envie_nu = calculer_nu_dynamique(S_next[region])
+        
+        # On met à jour le paramètre moyen pour le futur SAA
+        S_next['P_mean'][region]['nu'] = nouvelle_envie_nu
+
+    return S_next
+
+# =============================================================================
+# FONCTION GLOBALE
+# =============================================================================
+
+def run_dlp(S_initial, T_horizon, M_scenarios, costs, K_renouv_func):
+    """
+    Exécute la politique Direct Lookahead (DLA) avec SAA sur T périodes
+    """
+    S_t = copy.deepcopy(S_initial)
+    history = [copy.deepcopy(S_initial)]
+
+    print(f"\n{'='*80}")
+    print(f"DÉMARRAGE SAA (Horizon T={T_horizon})")
+    print(f"{'='*80}")
+
+    for t in range(T_horizon):
+        # Résolution du problème SAA
+        x_t_star = solve_saa_problem(S_t, M_scenarios, costs)
+        
+        # Préparation de l'affichage
+        total_allocated = sum(x_t_star.values())
+        stock_dispo = S_t['Stock']['K']
+        regions_list = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+        print(f"\n--- Période t={t} (Stock dispo: {stock_dispo:.0f}, Alloué: {total_allocated:.0f}) ---")
+        
+        header = (
+            f"{'Région':<10} | "
+            f"{'S':>7} | {'I':>6} | {'R':>6} | {'D':>5} | {'V':>6} || "
+            f"{'ALLOC':>7} || "
+            f"{'Beta'} | {'Nu'} | {'Alpha'} | {'Gamma'} | {'Eta'}"
+        )
+        print("-" * len(header))
+        print(header)
+        print("-" * len(header))
+
+        for r in regions_list:
+            # Récupération des compartiments
+            s_val = S_t[r].get('S', 0)
+            i_val = S_t[r].get('I', 0)
+            r_val = S_t[r].get('R', 0)
+            d_val = S_t[r].get('D', 0)
+            v_val = S_t[r].get('V', 0)
+            alloc = x_t_star.get(r, 0)
+
+            # Récupération des paramètres (stockés dans S_t['P_mean'][r])
+            params = S_t['P_mean'].get(r, {})
+            beta_val = params.get('beta', 0)
+            nu_val = params.get('nu', 0)
+            alpha_val = params.get('alpha', 0)
+            gamma_val = params.get('gamma', 0)
+            eta_val = params.get('eta', 0)
+
+            print(
+                f"{r:<10} | "
+                f"{s_val:>7.0f} | {i_val:>6.0f} | {r_val:>6.0f} | {d_val:>5.0f} | {v_val:>6.0f} || "
+                f"{alloc:>7.0f} || "
+                f"{beta_val} | {nu_val} | {alpha_val} | {gamma_val} | {eta_val}"
+            )
+
+
+        # Transition vers l'état S_t+1 en utilisant la réalisation réelle W_real
+        S_t_plus_1 = update_state(S_t, x_t_star, K_renouv_func)
+
+        # Mise à jour de l'état pour la prochaine itération
+        S_t = S_t_plus_1
+        history.append(copy.deepcopy(S_t))
+
+    return history
+
+def run_pfa(S_initial, T_horizon, K_renouv_func):
+    """ Exécute la politique PFA (Heuristique) """
+    S_t = copy.deepcopy(S_initial)
+    history = [copy.deepcopy(S_initial)]
+
+    print(f"\n{'='*80}")
+    print(f"DÉMARRAGE PFA (Horizon T={T_horizon})")
+    print(f"{'='*80}")
+
+    for t in range(T_horizon):
+        # 1. Décision (Heuristique)
+        x_t_star = solve_pfa_policy(S_t)
+
+        # 2. Affichage
+        afficher_etat_periode(t, S_t, x_t_star)
+
+        # 3. Transition Réelle
+        S_t = update_state(S_t, x_t_star, K_renouv_func)
+        history.append(copy.deepcopy(S_t))
+
+    return history 
+
+# =============================================================================
+# FONCTION D'AFFICHAGE
+# =============================================================================
+
+def afficher_etat_periode(t, S_t, x_t_star):
+    """ Fonction utilitaire pour éviter de dupliquer le code d'affichage """
+    total_allocated = sum(x_t_star.values())
+    stock_dispo = S_t['Stock']['K']
+    regions_list = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
+    
+    print(f"\n--- Période t={t} (Stock: {stock_dispo:.0f}, Alloué: {total_allocated:.0f}) ---")
+    
+    header = f"{'Région':<10} | {'S':>7} | {'I':>6} | {'R':>6} | {'D':>5} | {'V':>6} || {'ALLOC':>7} || {'Beta'} | {'Nu'} | {'Alpha'}"
+    print("-" * len(header))
+    print(header)
+    print("-" * len(header))
+
+    for r in regions_list:
+        vals = S_t[r]
+        alloc = x_t_star.get(r, 0)
+        p = S_t['P_mean'].get(r, {})
+        
+        print(f"{r:<10} | {vals['S']:>7.0f} | {vals['I']:>6.0f} | {vals['R']:>6.0f} | {vals['D']:>5.0f} | {vals['V']:>6.0f} || {alloc:>7.0f} || {p.get('beta',0):.2f} | {p.get('nu',0):.3f} | {p.get('alpha',0):.2f}")
+
+# =============================================================================
+# FONCTION DE COMPARAISON
+# =============================================================================
+
+def compare_policies(S_initial, T_horizon, M_scenarios, costs, K_renouv_func):
+    """ Lance SAA puis PFA et compare les résultats finaux """
+    
+    # 1. Exécution SAA
+    history_saa = run_dlp(copy.deepcopy(S_initial), T_horizon, M_scenarios, costs, K_renouv_func)
+    
+    # 2. Exécution PFA
+    history_pfa = run_pfa(copy.deepcopy(S_initial), T_horizon, K_renouv_func)
+
+    # 3. Calcul des résultats
+    regions = [k for k in S_initial.keys() if k not in ['Stock', 't', 'P_mean']]
+    
+    final_saa = history_saa[-1]
+    final_pfa = history_pfa[-1]
+    
+    d_saa = sum(final_saa[r]['D'] for r in regions)
+    d_pfa = sum(final_pfa[r]['D'] for r in regions)
+    diff = d_pfa - d_saa # Positif = SAA a gagné (moins de morts)
+
+    # Affichage du bilan
+    print("\n" + "#"*60)
+    print(f" BILAN FINAL (T={T_horizon})")
+    print("#"*60)
+    print(f"Morts Totaux SAA : {d_saa:.0f}")
+    print(f"Morts Totaux PFA : {d_pfa:.0f}")
+    
+    if diff > 0:
+        print(f"🏆 RÉSULTAT : SAA gagne (a sauvé {diff:.0f} vies de plus)")
+    elif diff < 0:
+        print(f"⚠️ RÉSULTAT : PFA gagne (a sauvé {-diff:.0f} vies de plus)")
+    else:
+        print("🤝 RÉSULTAT : Égalité parfaite")
+    print("#"*60 + "\n")
+
+    return d_saa, d_pfa, diff
+
+# =============================================================================
+# CONFIGURATION DES SCÉNARIOS
+# =============================================================================
+
+SCENARIOS = {
+    1: {
+        "nom": "L'Effet d'Échelle (Tailles variées)",
+        "data": S_1_INITIAL
+    },
+    2: {
+        "nom": "La Bombe à Retardement (Stades différents)",
+        "data": S_2_INITIAL
+    },
+    3: {
+        "nom": "Le Dilemme Éthique (Masses saines vs Foyers)",
+        "data": S_3_INITIAL
+    }
+}
+
+# =============================================================================
+# FONCTION LANCER TEST 
+# =============================================================================
+
+def lancer_test(numero_scenario):
+    if numero_scenario not in SCENARIOS:
+        print(f"Erreur : Le scénario {numero_scenario} n'existe pas.")
+        return
+
+    infos = SCENARIOS[numero_scenario]
+    print(f" Lancement du TEST #{numero_scenario} : {infos['nom']}")
+    
+
+    compare_policies(
+        copy.deepcopy(infos['data']), 
+        HORIZON_T, 
+        M_SCENARIOS, 
+        COSTS, 
+        K_renouv_func
+    )
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+SCENARIO_A_CHOISIR = 1 
+
+if __name__ == "__main__":
+    lancer_test(SCENARIO_A_CHOISIR)
+
