@@ -269,45 +269,69 @@ def generer_scenario_seirdv(S_t, x_t, ecart_type_ratio=0.2):
 
 def solve_pfa_policy(S_t):
     """
-    Politique PFA : Alloue les vaccins en priorisant les régions avec le taux d'infection le plus élevé.
+    Politique PFA Modifiée (Proportionnelle) :
+    - La région la plus critique reçoit 40% du stock (ou son besoin max).
+    - Le reste du stock est réparti entre les autres régions proportionnellement à leur score.
 
-    Score de priorité : Pr_i = I_i / P_i (taux d'infection)
-    Allocation : On alloue K_t aux régions dans l'ordre décroissant de Pr_i jusqu'à épuisement du stock.
+    Score de priorité : Pr_i = I_i / P_i
     """
     regions = [k for k in S_t.keys() if k not in ['Stock', 't', 'P_mean']]
     K_t = S_t['Stock']['K']
+    x_t_star = {r: 0.0 for r in regions}
 
-    # Calcul du score de priorité pour chaque région
+    # 1. Calcul des scores
     priorities = {}
     for region in regions:
-        I_i = S_t[region]['I']
-        P_i = S_t[region]['P']
-        S_i = S_t[region]['S']
-
-        if P_i > 0:
-            priorities[region] = {
-                'score': I_i / P_i,  # Taux d'infection
-                'I': I_i,
-                'S': S_i
-            }
+        vals = S_t[region]
+        if vals['P'] > 0:
+            score = vals['I'] / vals['P']
         else:
-            priorities[region] = {'score': 0, 'I': 0, 'S': S_i}
+            score = 0
+        
+        priorities[region] = {
+            'score': score,
+            'S': vals['S'] # Capacité max de vaccination (population saine)
+        }
 
-    # Tri des régions par ordre décroissant de priorité
+    # Tri décroissant
     sorted_regions = sorted(priorities.keys(), key=lambda r: priorities[r]['score'], reverse=True)
+    
+    if not sorted_regions or K_t <= 0:
+        return x_t_star
 
-    # Allocation des vaccins dans l'ordre de priorité
-    x_t_star = {r: 0.0 for r in regions}
-    stock_restant = K_t
-
-    for region in sorted_regions:
-        if stock_restant <= 0:
-            break
-
-        # On alloue au maximum le stock restant ou le nombre de sains disponibles
-        allocation = min(stock_restant, priorities[region]['S'])
-        x_t_star[region] = allocation
-        stock_restant -= allocation
+    # --- ÉTAPE 1 : Allocation à la région prioritaire (Top 1) ---
+    top_region = sorted_regions[0]
+    
+    # 60% du stock total cible
+    target_top_allocation = 0.60 * K_t
+    
+    # On donne le min entre : 40% du stock, OU le stock total dispo, OU le besoin réel (S)
+    allocation_top = min(target_top_allocation, K_t, priorities[top_region]['S'])
+    
+    x_t_star[top_region] = allocation_top
+    
+    # --- ÉTAPE 2 : Allocation aux autres régions (Les 40% restants) ---
+    stock_restant = K_t - allocation_top
+    other_regions = sorted_regions[1:]
+    
+    if stock_restant > 0 and other_regions:
+        # Somme des scores des autres régions pour le calcul du ratio
+        total_score_others = sum(priorities[r]['score'] for r in other_regions)
+        
+        for region in other_regions:
+            # Si les scores sont nuls (personne n'est malade ailleurs), on ne distribue rien
+            if total_score_others > 0:
+                ratio = priorities[region]['score'] / total_score_others
+                
+                # Allocation théorique basée sur le ratio
+                allocation_theorique = ratio * stock_restant
+                
+                # On ne peut pas donner plus que le nombre de personnes saines (S)
+                allocation_reelle = min(allocation_theorique, priorities[region]['S'])
+                
+                x_t_star[region] = allocation_reelle
+            else:
+                x_t_star[region] = 0.0
 
     return x_t_star
 
